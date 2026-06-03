@@ -199,3 +199,62 @@ func GetSerialNumber(id int) (string, error) {
 	b := C.GoBytes(unsafe.Pointer(&sn.id[0]), C.int(len(sn.id)))
 	return fmt.Sprintf("%x", b), nil
 }
+
+// NOTE: CAAMinDegree ("get mini degree") is declared in CAA_API.h, but the
+// shipped libCAA exports it with C++ name mangling (_Z12CAAMinDegreeif) instead
+// of C linkage — a ZWO SDK bug — so it is not callable from cgo. Omitted until
+// the library exports it with C linkage like the other functions.
+
+// GetType returns the rotator's model/type string.
+func GetType(id int) (string, error) {
+	var t C.CAA_TYPE
+	if err := errcode(C.CAAGetType(C.int(id), &t)); err != nil {
+		return "", err
+	}
+	return C.GoString(&t._type[0]), nil
+}
+
+// SetBeep enables or disables the rotator's beeper.
+func SetBeep(id int, on bool) error {
+	return errcode(C.CAASetBeep(C.int(id), C.bool(on)))
+}
+
+// GetBeep reports whether the beeper is enabled.
+func GetBeep(id int) (bool, error) {
+	var v C.bool
+	err := errcode(C.CAAGetBeep(C.int(id), &v))
+	return bool(v), err
+}
+
+// SetID sets the rotator's user alias (up to 8 bytes; longer strings are
+// truncated). The alias is what GetSerialNumber reads back.
+func SetID(id int, alias string) error {
+	var a C.CAA_ID
+	b := []byte(alias)
+	for i := 0; i < len(a.id) && i < len(b); i++ {
+		a.id[i] = C.uchar(b[i])
+	}
+	return errcode(C.CAASetID(C.int(id), a))
+}
+
+// Check reports whether the USB device with the given VID/PID is a CAA. The SDK
+// prefers this over GetProductIDs.
+func Check(vid, pid int) bool {
+	return C.CAACheck(C.int(vid), C.int(pid)) == 1
+}
+
+// GetProductIDs returns the USB product IDs of supported rotators.
+// Deprecated by the SDK in favor of Check.
+func GetProductIDs() []int {
+	n := int(C.CAAGetProductIDs((*C.int)(nil)))
+	if n <= 0 {
+		return nil
+	}
+	buf := make([]C.int, n)
+	C.CAAGetProductIDs(&buf[0])
+	ids := make([]int, n)
+	for i, v := range buf {
+		ids[i] = int(v)
+	}
+	return ids
+}

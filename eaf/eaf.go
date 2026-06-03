@@ -11,11 +11,11 @@
 // On Linux the SDK additionally requires libsdbus-c++.so.2 and libWrapperSdbus.so
 // from the same lib directory.
 //
-// NOTE on the header: EAF_focuser.h (kept in ./include for reference) is a C++
-// header — EAFStopAndWait declares a default argument, which is not valid C — so
-// it cannot be included in a cgo C preamble. Instead the C-ABI prototypes and the
-// EAF_INFO layout are declared directly below; the ZWO library exports these with
-// C linkage (extern "C"). Keep these declarations in sync with the header.
+// NOTE on the header: EAF_focuser.h is a C++ header only because EAFStopAndWait
+// declares a default argument (timeoutMs = 1000), which is not valid C. The
+// vendored copy in ./include has that one default removed, so the header
+// includes cleanly in the cgo C preamble below (the SDK exports everything with
+// C linkage). This is the only edit from the ZWO original.
 //
 // Supported targets follow the ZWO SDK: linux (x86/x64/armv6,7,8) and macOS
 // (x86_64 and arm64).
@@ -28,32 +28,7 @@ package eaf
 #include <stdlib.h>
 #include <stdbool.h>
 
-typedef struct { int ID; char Name[64]; int MaxStep; } EAF_INFO;
-typedef struct { unsigned char id[8]; } EAF_SN;
-
-extern int         EAFGetNum(void);
-extern int         EAFGetID(int index, int* ID);
-extern int         EAFOpen(int ID);
-extern int         EAFClose(int ID);
-extern int         EAFGetProperty(int ID, EAF_INFO* pInfo);
-extern int         EAFMove(int ID, int iStep);
-extern int         EAFStop(int ID);
-extern int         EAFIsMoving(int ID, bool* pbVal, bool* pbHandControl);
-extern int         EAFGetPosition(int ID, int* piStep);
-extern int         EAFResetPostion(int ID, int iStep);
-extern int         EAFGetTemp(int ID, float* pfTemp);
-extern int         EAFSetMaxStep(int ID, int iVal);
-extern int         EAFGetMaxStep(int ID, int* piVal);
-extern int         EAFStepRange(int ID, int* piVal);
-extern int         EAFSetReverse(int ID, bool bVal);
-extern int         EAFGetReverse(int ID, bool* pbVal);
-extern int         EAFSetBeep(int ID, bool bVal);
-extern int         EAFGetBeep(int ID, bool* pbVal);
-extern int         EAFSetBacklash(int ID, int iVal);
-extern int         EAFGetBacklash(int ID, int* piVal);
-extern const char* EAFGetSDKVersion(void);
-extern int         EAFGetFirmwareVersion(int ID, unsigned char* major, unsigned char* minor, unsigned char* build);
-extern int         EAFGetSerialNumber(int ID, EAF_SN* pSN);
+#include <EAF_focuser.h>
 */
 import "C"
 
@@ -88,7 +63,7 @@ func (e EafError) Error() string {
 }
 
 // errcode converts a C EAF_ERROR_CODE into a Go error (nil on success).
-func errcode(code C.int) error {
+func errcode(code C.EAF_ERROR_CODE) error {
 	if int(code) == EAF_SUCCESS {
 		return nil
 	}
@@ -253,4 +228,273 @@ func GetSerialNumber(id int) (string, error) {
 	}
 	b := C.GoBytes(unsafe.Pointer(&sn.id[0]), C.int(len(sn.id)))
 	return fmt.Sprintf("%x", b), nil
+}
+
+// StopAndWait halts motion and blocks until the focuser stops or timeoutMs
+// elapses (the blocking counterpart to Stop).
+func StopAndWait(id, timeoutMs int) error {
+	return errcode(C.EAFStopAndWait(C.int(id), C.int(timeoutMs)))
+}
+
+// GetType returns the focuser's model/type string.
+func GetType(id int) (string, error) {
+	var t C.EAF_TYPE
+	if err := errcode(C.EAFGetType(C.int(id), &t)); err != nil {
+		return "", err
+	}
+	return C.GoString(&t._type[0]), nil
+}
+
+// SetID sets the focuser's user alias (up to 8 bytes; longer strings are
+// truncated). The alias is what GetSerialNumber reads back.
+func SetID(id int, alias string) error {
+	var a C.EAF_ID
+	b := []byte(alias)
+	for i := 0; i < len(a.id) && i < len(b); i++ {
+		a.id[i] = C.uchar(b[i])
+	}
+	return errcode(C.EAFSetID(C.int(id), a))
+}
+
+// GetLedState reports whether the indicator LED is on.
+func GetLedState(id int) (bool, error) {
+	var s C.bool
+	err := errcode(C.EAFGetLedState(C.int(id), &s))
+	return bool(s), err
+}
+
+// SetLedState turns the indicator LED on or off.
+func SetLedState(id int, on bool) error {
+	return errcode(C.EAFSetLedState(C.int(id), C.bool(on)))
+}
+
+// SetShippingMode puts the focuser into shipping (battery-storage) mode.
+func SetShippingMode(id int) error {
+	return errcode(C.EAFSetShippingMode(C.int(id)))
+}
+
+// GetReason returns a vendor diagnostic "reason" code.
+func GetReason(id int) (int, error) {
+	var r C.int
+	err := errcode(C.EAFGetReason(C.int(id), &r))
+	return int(r), err
+}
+
+// GetErrorCode returns the focuser's motor and battery error codes (each a short
+// status string).
+func GetErrorCode(id int) (motor, battery string, err error) {
+	var msg C.EAF_ERROR_MSG
+	if e := errcode(C.EAFGetErrorCode(C.int(id), &msg)); e != nil {
+		return "", "", e
+	}
+	return C.GoString(&msg.motor_error_code[0]), C.GoString(&msg.battery_error_code[0]), nil
+}
+
+// Check reports whether the USB device with the given VID/PID is an EAF. The SDK
+// prefers this over GetProductIDs.
+func Check(vid, pid int) bool {
+	return C.EAFCheck(C.int(vid), C.int(pid)) == 1
+}
+
+// GetProductIDs returns the USB product IDs of supported focusers.
+// Deprecated by the SDK in favor of Check.
+func GetProductIDs() []int {
+	n := int(C.EAFGetProductIDs((*C.int)(nil)))
+	if n <= 0 {
+		return nil
+	}
+	buf := make([]C.int, n)
+	C.EAFGetProductIDs(&buf[0])
+	ids := make([]int, n)
+	for i, v := range buf {
+		ids[i] = int(v)
+	}
+	return ids
+}
+
+// BatteryInfo mirrors EAF_BATTERY_INFO (units are the SDK's raw values).
+type BatteryInfo struct {
+	Temp             int
+	Voltage          int
+	ChargeCurrent    int
+	Percentage       int
+	DischargeCurrent int
+	Health           int
+	ChargeVoltage    int
+	Cycles           int
+}
+
+func toBatteryInfo(bi C.EAF_BATTERY_INFO) BatteryInfo {
+	return BatteryInfo{
+		Temp:             int(bi.battery_temp),
+		Voltage:          int(bi.battery_vol),
+		ChargeCurrent:    int(bi.battery_charge_curr),
+		Percentage:       int(bi.battery_percentage),
+		DischargeCurrent: int(bi.battery_discharge_curr),
+		Health:           int(bi.battery_health),
+		ChargeVoltage:    int(bi.battery_charge_vol),
+		Cycles:           int(bi.battery_num_of_cycles),
+	}
+}
+
+// GetBatteryInfo returns the focuser's battery telemetry (battery-powered models).
+func GetBatteryInfo(id int) (BatteryInfo, error) {
+	var bi C.EAF_BATTERY_INFO
+	if err := errcode(C.EAFGetBatteryInfo(C.int(id), &bi)); err != nil {
+		return BatteryInfo{}, err
+	}
+	return toBatteryInfo(bi), nil
+}
+
+// GetNumOfControls returns how many control-caps entries the focuser exposes.
+func GetNumOfControls(id int) (int, error) {
+	var n C.int
+	err := errcode(C.EAFGetNumOfControls(C.int(id), &n))
+	return int(n), err
+}
+
+// ControlCaps mirrors EAF_CONTROL_CAPS: metadata for one configurable control.
+type ControlCaps struct {
+	Name         string
+	Description  string
+	IsSupported  bool
+	IsWritable   bool
+	MaxValue     int
+	MinValue     int
+	DefaultValue int
+	ControlType  int // EAF_CONTROL_TYPE
+}
+
+// GetControlCaps returns the control at index (0..GetNumOfControls()-1).
+func GetControlCaps(id, index int) (ControlCaps, error) {
+	var c C.EAF_CONTROL_CAPS
+	if err := errcode(C.EAFGetControlCaps(C.int(id), C.int(index), &c)); err != nil {
+		return ControlCaps{}, err
+	}
+	return ControlCaps{
+		Name:         C.GoString(&c.name[0]),
+		Description:  C.GoString(&c.description[0]),
+		IsSupported:  bool(c.isSupported),
+		IsWritable:   bool(c.isWritable),
+		MaxValue:     int(c.maxValue),
+		MinValue:     int(c.minValue),
+		DefaultValue: int(c.defaultValue),
+		ControlType:  int(c.controlType),
+	}, nil
+}
+
+// --- Bluetooth (BLE) focusers ------------------------------------------------
+//
+// The connection-state and pair-state callback registrars
+// (EAFBLERegConnStateCallback / EAFBLERegPairStateCallback) are not wrapped —
+// they take C function pointers; bridge them with a cgo //export if needed.
+
+// GetBLEName returns the focuser's Bluetooth name.
+func GetBLEName(id int) (string, error) {
+	var n C.EAF_BLE_NAME
+	if err := errcode(C.EAFGetBLEName(C.int(id), &n)); err != nil {
+		return "", err
+	}
+	return C.GoString(&n.name[0]), nil
+}
+
+// SetBLEName sets the focuser's Bluetooth name (up to 15 characters).
+func SetBLEName(id int, name string) error {
+	var n C.EAF_BLE_NAME
+	b := []byte(name)
+	for i := 0; i < len(n.name)-1 && i < len(b); i++ {
+		n.name[i] = C.char(b[i])
+	}
+	return errcode(C.EAFSetBLEName(C.int(id), n))
+}
+
+// BLEDevice mirrors BLE_DEVICE_INFO_T: a scanned Bluetooth focuser.
+type BLEDevice struct {
+	Name             string
+	Address          string
+	SignalStrength   int
+	BluetoothAddress int64
+}
+
+// BLEScan scans for Bluetooth focusers for durationMs, returning up to maxDevices.
+func BLEScan(durationMs, maxDevices int) ([]BLEDevice, error) {
+	if maxDevices <= 0 {
+		return nil, nil
+	}
+	devs := make([]C.BLE_DEVICE_INFO_T, maxDevices)
+	var n C.int
+	if err := errcode(C.EAFBLEScan(C.int(durationMs), &devs[0], C.int(maxDevices), &n)); err != nil {
+		return nil, err
+	}
+	out := make([]BLEDevice, int(n))
+	for i := range out {
+		d := devs[i]
+		out[i] = BLEDevice{
+			Name:             C.GoString(&d.name[0]),
+			Address:          C.GoString(&d.address[0]),
+			SignalStrength:   int(d.signalStrength),
+			BluetoothAddress: int64(d.bluetoothAddress),
+		}
+	}
+	return out, nil
+}
+
+// BLEConnect connects to a Bluetooth focuser by name/address, returning its ID.
+func BLEConnect(name, address string) (int, error) {
+	cn := C.CString(name)
+	defer C.free(unsafe.Pointer(cn))
+	ca := C.CString(address)
+	defer C.free(unsafe.Pointer(ca))
+	var id C.int
+	err := errcode(C.EAFBLEConnect(cn, ca, &id))
+	return int(id), err
+}
+
+// BLEDisconnect disconnects a Bluetooth focuser.
+func BLEDisconnect(id int) error { return errcode(C.EAFBLEDisconnect(C.int(id))) }
+
+// BLEPair pairs with a Bluetooth focuser.
+func BLEPair(id int) error { return errcode(C.EAFBLEPair(C.int(id))) }
+
+// BLEClearPair clears the Bluetooth pairing.
+func BLEClearPair(id int) error { return errcode(C.EAFBLEClearPair(C.int(id))) }
+
+// AllInfo mirrors EAF_ALL_INFO: a consolidated status snapshot (BLE focusers).
+type AllInfo struct {
+	IsRun            bool
+	BacklashSteps    int
+	CurrentSteps     int
+	Temperature      float32
+	BuzzerState      int
+	ReverseState     int
+	HandlePressed    bool
+	HandleConnect    bool
+	MaxSteps         int
+	LedState         int
+	MotorErrorCode   string
+	BatteryErrorCode string
+	Battery          BatteryInfo
+}
+
+// BLEGetAllInfo returns a consolidated status snapshot for a Bluetooth focuser.
+func BLEGetAllInfo(id int) (AllInfo, error) {
+	var a C.EAF_ALL_INFO
+	if err := errcode(C.EAFBLEgetAllInfo(C.int(id), &a)); err != nil {
+		return AllInfo{}, err
+	}
+	return AllInfo{
+		IsRun:            a.is_run != 0,
+		BacklashSteps:    int(a.backlash_steps),
+		CurrentSteps:     int(a.current_steps),
+		Temperature:      float32(a.temperature),
+		BuzzerState:      int(a.buzzer_state),
+		ReverseState:     int(a.reverse_state),
+		HandlePressed:    a.handle_pressed != 0,
+		HandleConnect:    a.handle_connect != 0,
+		MaxSteps:         int(a.max_steps),
+		LedState:         int(a.led_state),
+		MotorErrorCode:   C.GoStringN(&a.motor_error_code[0], 2),
+		BatteryErrorCode: C.GoStringN(&a.battery_error_code[0], 2),
+		Battery:          toBatteryInfo(a.battery_info),
+	}, nil
 }

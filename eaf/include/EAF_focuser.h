@@ -425,7 +425,7 @@ EAF_ERROR_REMOVED: focuser is removed
 EAF_ERROR_MOVING: focuser did not stop within timeoutMs
 
 ***************************************************************************/
-EAF_API	EAF_ERROR_CODE EAFStopAndWait(int ID, int timeoutMs = 1000);
+EAF_API	EAF_ERROR_CODE EAFStopAndWait(int ID, int timeoutMs);
 
 /***************************************************************************
 Descriptions:

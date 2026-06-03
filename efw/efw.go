@@ -155,3 +155,43 @@ func GetSerialNumber(id int) (string, error) {
 	b := C.GoBytes(unsafe.Pointer(&sn.id[0]), C.int(len(sn.id)))
 	return fmt.Sprintf("%x", b), nil
 }
+
+// SetID sets the wheel's user alias (up to 8 bytes; longer strings are
+// truncated). The alias is what GetSerialNumber reads back.
+func SetID(id int, alias string) error {
+	var a C.EFW_ID
+	b := []byte(alias)
+	for i := 0; i < len(a.id) && i < len(b); i++ {
+		a.id[i] = C.uchar(b[i])
+	}
+	return errcode(C.EFWSetID(C.int(id), a))
+}
+
+// GetHWErrorCode returns the wheel's hardware error code (0 = no error).
+func GetHWErrorCode(id int) (int, error) {
+	var code C.int
+	err := errcode(C.EFWGetHWErrorCode(C.int(id), &code))
+	return int(code), err
+}
+
+// Check reports whether the USB device with the given VID/PID is an EFW (the EFW
+// VID is 0x03C3). The SDK prefers this over GetProductIDs.
+func Check(vid, pid int) bool {
+	return C.EFWCheck(C.int(vid), C.int(pid)) == 1
+}
+
+// GetProductIDs returns the USB product IDs of supported filter wheels.
+// Deprecated by the SDK in favor of Check.
+func GetProductIDs() []int {
+	n := int(C.EFWGetProductIDs((*C.int)(nil)))
+	if n <= 0 {
+		return nil
+	}
+	buf := make([]C.int, n)
+	C.EFWGetProductIDs(&buf[0])
+	ids := make([]int, n)
+	for i, v := range buf {
+		ids[i] = int(v)
+	}
+	return ids
+}

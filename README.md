@@ -1,7 +1,7 @@
 # goasi
 
 cgo bindings for the [ZWO](https://www.zwoastro.com/) ASI device SDKs, as a set
-of small, self-contained Go packages — one per device family.
+of self-contained Go packages — one per device family.
 
 Module path: `github.com/mikefsq/goasi`
 
@@ -17,8 +17,8 @@ workspace (`asiccd`, `asieaf`, `asiefw`, `asicaa`) each import a single package.
 
 ## The shared libraries are not bundled
 
-The ZWO `.so`/`.dylib` runtime libraries are proprietary and **not** redistributed
-here — only the headers, which are all that's needed to compile. Download the ASI
+The ZWO `.so`/`.dylib` runtime libraries are not redistributed here — only the
+headers, which are all that's needed to compile. Download the ASI
 SDK for your device from ZWO and install the matching-architecture library
 yourself.
 
@@ -73,17 +73,15 @@ resolves correctly even when the package is imported as a dependency.
 
 ## Notes
 
-- **EAF header is C++.** `EAF_focuser.h` declares a default argument
-  (`EAFStopAndWait(..., int timeoutMs = 1000)`), which is not valid C, so it
-  cannot be `#include`d in a cgo C preamble. `eaf.go` therefore declares the
-  C-ABI prototypes and the `EAF_INFO` layout inline (the ZWO library exports them
-  with C linkage); the header is kept in `eaf/include` for reference. Keep the
-  inline declarations in sync if you wrap more functions.
-- **Scope.** `ccd` is a full camera binding; `caa`/`eaf`/`efw` cover the core
-  surface (enumerate/open/close, properties, the primary motion/position
-  operations, temperature, reverse/beep, firmware, serial). Peripheral features
-  (EAF Bluetooth/battery, EFW HW-error, control-caps enumeration) are not yet
-  wrapped — extend per binding as needed.
-- **Arch constraint.** The bindings build for the arches the installed library
-  provides; there is no `//go:build` arch restriction (the camera's old
-  `!arm64` workaround was removed once V1.41 shipped `mac_arm64`).
+- **EAF header.** `EAF_focuser.h` is C++ only because `EAFStopAndWait` declares a
+  default argument (`int timeoutMs = 1000`); the vendored copy has that one
+  default removed so the header `#include`s cleanly as C (the SDK exports
+  everything with C linkage). That is the only change from the ZWO original.
+- **Coverage.** `ccd` is a full camera binding; `caa`/`eaf`/`efw` now wrap their
+  whole SDK surface, with two exceptions: the EAF BLE callback registrars
+  (`EAFBLERegConnStateCallback`/`EAFBLERegPairStateCallback`), which take C
+  function pointers and would need a cgo `//export` bridge; and `CAAMinDegree`,
+  which the shipped `libCAA` exports with C++ name mangling instead of C linkage
+  (a ZWO SDK bug), so it is not callable from cgo.
+
+
