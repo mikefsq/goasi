@@ -103,6 +103,12 @@ func newEFW(t Transport, info DeviceInfo) *EFW {
 	return &EFW{t: t, info: info, featureLen: fl}
 }
 
+// New wraps an already-open Transport as an EFW handle. Most callers use
+// OpenFirst / OpenBySerial (which select a platform transport); New is for
+// supplying a custom Transport — an alternate backend, or a fake for testing the
+// stack end-to-end without hardware.
+func New(t Transport, info DeviceInfo) *EFW { return newEFW(t, info) }
+
 // OpenFirst finds and opens the first attached ZWO EFW.
 func OpenFirst() (*EFW, error) {
 	t, info, err := openFirst()
