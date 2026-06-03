@@ -1,0 +1,10 @@
+.DS_Store
+*~
+
+# Proprietary ZWO shared libraries are NOT redistributed with this module.
+# Install them yourself from the ZWO SDK (see each package's doc comment).
+*.so
+*.so.*
+*.dylib
+*.dylib.*
+*.a
