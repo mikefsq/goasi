@@ -84,4 +84,14 @@ resolves correctly even when the package is imported as a dependency.
   which the shipped `libCAA` exports with C++ name mangling instead of C linkage
   (a ZWO SDK bug), so it is not callable from cgo.
 
+## License
+
+The Go binding code in this repository is licensed under the
+[MIT License](LICENSE).
+
+This does **not** extend to the ZWO ASI SDK. The headers under `*/include/` are
+© ZWO, and the runtime libraries (not included here) are ZWO's property under
+ZWO's own terms — obtain the SDK from [ZWO](https://www.zwoastro.com/). The MIT
+license covers only the Go code in this repository.
+
 
