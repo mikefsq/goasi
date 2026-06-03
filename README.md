@@ -15,35 +15,48 @@ Module path: `github.com/mikefsq/goasi`
 Each package is independent: import only the one(s) you need. Drivers in this
 workspace (`asiccd`, `asieaf`, `asiefw`, `asicaa`) each import a single package.
 
-## The shared libraries are NOT bundled
+## The shared libraries are not bundled
 
-The ZWO `.so`/`.dylib` runtime libraries are **not** redistributed here (only the
-headers, which are sufficient to compile). You install the libraries yourself
-from the ZWO SDK. The companion `Makefile` in `../ASI_API_Release` does this:
+The ZWO `.so`/`.dylib` runtime libraries are proprietary and **not** redistributed
+here — only the headers, which are all that's needed to compile. Download the ASI
+SDK for your device from ZWO and install the matching-architecture library
+yourself.
 
-```sh
-cd ../ASI_API_Release
-sudo make install            # detects platform, installs the matching-arch libs
-                             # into /usr/local/lib (macOS: rewrites the dylib id)
-```
-
-The packages pass `-L/usr/local/lib`, so once installed a plain build links:
+The packages link with `-L/usr/local/lib`, so the simplest setup is to drop the
+library there:
 
 ```sh
+sudo cp libASICamera2.* /usr/local/lib/     # the lib(s) for your device + arch
 CGO_ENABLED=1 go build ./...
 ```
 
-If you install elsewhere, point the linker (and, on Linux, the loader) at it:
+To keep the SDK elsewhere, point the linker (and the loader) at it:
 
 ```sh
 CGO_ENABLED=1 CGO_LDFLAGS="-L/path/to/sdk/lib" go build ./...
-LD_LIBRARY_PATH=/path/to/sdk/lib ./yourprogram      # DYLD_LIBRARY_PATH on macOS
+LD_LIBRARY_PATH=/path/to/sdk/lib ./yourprogram      # Linux
+DYLD_LIBRARY_PATH=/path/to/sdk/lib ./yourprogram    # macOS
 ```
+
+### macOS: rewrite the library path baked into the binary
+
+On macOS the library's path is recorded in the binary at link time (the dylib's
+install name). If the loader can't find the library at runtime, you don't need
+`DYLD_LIBRARY_PATH` — just rewrite the recorded path in the binary with
+`install_name_tool`:
+
+```sh
+otool -L ./asiccd                                   # show the recorded dylib path
+install_name_tool -change libASICamera2.dylib \
+    /opt/zwo/libASICamera2.dylib ./asiccd           # repoint it to the real file
+```
+
+If the install name uses `@rpath`, add a search path instead:
+`install_name_tool -add_rpath /opt/zwo ./asiccd`.
 
 **Supported targets** follow the ZWO SDK: Linux (`x86`/`x64`/`armv6,7,8`) and
 macOS (`x86_64` and `arm64`). On Linux the EAF additionally needs
-`libsdbus-c++.so.2` and `libWrapperSdbus.so` from the same lib directory (the
-`Makefile` installs them).
+`libsdbus-c++.so.2` and `libWrapperSdbus.so` from the same lib directory.
 
 ## Layout
 
