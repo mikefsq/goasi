@@ -10,7 +10,7 @@ Module path: `github.com/mikefsq/goasi`
 | `ccd` | Camera | ASICamera2 (V1.41) | `ASICamera2.h` | `-lASICamera2` |
 | `caa` | Rotator (Camera Angle Adjuster) | CAA (V1.5.9) | `CAA_API.h` | `-lCAA` |
 | `eaf` | Focuser (Electronic Auto Focuser) | EAF (V1.8.1) | `EAF_focuser.h` | `-lEAFFocuser` |
-| `efw` | Filter wheel (Electronic Filter Wheel) | EFW (V1.8.4) | `EFW_filter.h` | `-lEFWFilter` |
+| `efw` | Filter wheel (Electronic Filter Wheel) | n/a | n/a | n/a |
 
 Each package is independent: import only the one(s) you need. Drivers in this
 workspace (`asiccd`, `asieaf`, `asiefw`, `asicaa`) each import a single package.
@@ -65,7 +65,7 @@ goasi/
 ├── ccd/   ccd.go   + include/ASICamera2.h
 ├── caa/   caa.go   + include/CAA_API.h
 ├── eaf/   eaf.go   + include/EAF_focuser.h
-└── efw/   efw.go   + include/EFW_filter.h
+└── efw/   efw.go
 ```
 
 Each package's cgo preamble uses `-I${SRCDIR}/include`, so the bundled header
@@ -77,12 +77,12 @@ resolves correctly even when the package is imported as a dependency.
   default argument (`int timeoutMs = 1000`); the vendored copy has that one
   default removed so the header `#include`s cleanly as C (the SDK exports
   everything with C linkage). That is the only change from the ZWO original.
-- **Coverage.** `ccd` is a full camera binding; `caa`/`eaf`/`efw` now wrap their
-  whole SDK surface, with two exceptions: the EAF BLE callback registrars
-  (`EAFBLERegConnStateCallback`/`EAFBLERegPairStateCallback`), which take C
-  function pointers and would need a cgo `//export` bridge; and `CAAMinDegree`,
-  which the shipped `libCAA` exports with C++ name mangling instead of C linkage
-  (a ZWO SDK bug), so it is not callable from cgo.
+- **Coverage.** `ccd` is a full camera binding; `efw` is a go-native hid driver;
+- `caa`/`eaf` now wrap their whole SDK surface, with two exceptions: the EAF BLE
+- callback registrars  (`EAFBLERegConnStateCallback`/`EAFBLERegPairStateCallback`), 
+- which take C function pointers and would need a cgo `//export` bridge; and 
+- `CAAMinDegree`, which the shipped `libCAA` exports with C++ name mangling instead
+- of C linkage (a ZWO SDK bug), so it is not callable from cgo.
 
 ## License
 
@@ -93,5 +93,3 @@ This does **not** extend to the ZWO ASI SDK. The headers under `*/include/` are
 © ZWO, and the runtime libraries (not included here) are ZWO's property under
 ZWO's own terms — obtain the SDK from [ZWO](https://www.zwoastro.com/). The MIT
 license covers only the Go code in this repository.
-
-
