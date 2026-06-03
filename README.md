@@ -78,11 +78,11 @@ resolves correctly even when the package is imported as a dependency.
   default removed so the header `#include`s cleanly as C (the SDK exports
   everything with C linkage). That is the only change from the ZWO original.
 - **Coverage.** `ccd` is a full camera binding; `efw` is a go-native hid driver;
-- `caa`/`eaf` now wrap their whole SDK surface, with two exceptions: the EAF BLE
-- callback registrars  (`EAFBLERegConnStateCallback`/`EAFBLERegPairStateCallback`), 
-- which take C function pointers and would need a cgo `//export` bridge; and 
-- `CAAMinDegree`, which the shipped `libCAA` exports with C++ name mangling instead
-- of C linkage (a ZWO SDK bug), so it is not callable from cgo.
+  `caa`/`eaf` now wrap their whole SDK surface, with two exceptions: the EAF BLE
+  callback registrars  (`EAFBLERegConnStateCallback`/`EAFBLERegPairStateCallback`), 
+  which take C function pointers and would need a cgo `//export` bridge; and 
+  `CAAMinDegree`, which the shipped `libCAA` exports with C++ name mangling instead
+  of C linkage (a ZWO SDK bug), so it is not callable from cgo.
 
 ## License
 
