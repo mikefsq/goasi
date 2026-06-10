@@ -111,14 +111,19 @@ model, _ := e.Model()                // "EFW-S-0"
 code, _  := e.HWErrorCode()          // 0 = no error
 
 wheels, _ := efw.List()              // enumerate with serials (multi-device)
+
+custom := efw.New(myTransport, efw.DeviceInfo{FeatureLen: 64}) // supply your own transport
 ```
 
 `Transport` is the seam: any backend implements `SetFeature`/`GetFeature`/`Close`
-(with `buf[0]` = HID report ID). The unit tests drive a fake `Transport`, so the
-whole driver is testable with no hardware and no cgo.
+(with `buf[0]` = HID report ID). `efw.New` wraps an arbitrary `Transport` — used by
+the platform openers, and by the end-to-end tests to back a real `*EFW` with a
+fake transport. So the whole driver (and the Alpaca server above it) is testable
+with no hardware and no cgo.
 
-## Not included
+## Alpaca driver & end-to-end tests
 
-- **Firmware update** — flashing; out of scope for a driver.
-- **Alpaca adapter** — wrapping this as a goalpaca device driver (Connected/Busy +
-  a persistent-owner lifecycle, bind-by-serial) is the next step.
+The ASCOM Alpaca FilterWheel server built on this package is `asiefw` (in
+`goalpaca_devices`). Its suite drives the full stack — Alpaca HTTP → server →
+driver → this package → transport — against a fake wheel, with an optional
+`EFW_HARDWARE=1` run against a real one.

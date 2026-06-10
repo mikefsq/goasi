@@ -84,8 +84,6 @@ static void* efw_open(uint32_t vid, uint32_t pid1, uint32_t pid2, uint32_t wantL
         chosen = d; chosenLoc = dloc; break;
     }
     if (!chosen) {
-        fprintf(stderr, "efw_open: device not found among %ld HID devices (vid=0x%x pid=0x%x/0x%x loc=0x%x)\n",
-                (long)n, vid, pid1, pid2, wantLoc);
         free(arr); CFRelease(devs); CFRelease(mgr); return NULL;
     }
     CFRetain(chosen); // survive release of devs/mgr
@@ -112,7 +110,7 @@ static void* efw_open(uint32_t vid, uint32_t pid1, uint32_t pid2, uint32_t wantL
 
     IOReturn r = IOHIDDeviceOpen(chosen, kIOHIDOptionsTypeNone);
     if (r != kIOReturnSuccess) {
-        fprintf(stderr, "efw_open: IOHIDDeviceOpen failed: 0x%08x (0xe00002e2 = not permitted)\n", r);
+        // open failed (0xe00002e2 = not permitted); the Go caller surfaces the error.
         CFRelease(chosen); CFRelease(mgr); return NULL;
     }
     // mgr is intentionally retained (not released) so its matching stays alive.
@@ -182,8 +180,9 @@ import (
 	"unsafe"
 )
 
-// DebugListAll prints every HID device IOKit can see. Returns the count, or a
-// negative value if enumeration was blocked (e.g. permission).
+// DebugListAll prints every HID device IOKit can see, for diagnosing why a wheel
+// isn't found. Returns the count, or a negative value if enumeration was blocked
+// (e.g. permission). Non-darwin builds provide a no-op returning -1.
 func DebugListAll() int { return int(C.efw_debug_list()) }
 
 type iokitTransport struct{ dev unsafe.Pointer }

@@ -24,38 +24,36 @@ const (
 	opQuery      = 0x02 // query family; byte[4] selects the sub-function (below)
 	opWriteAlias = 0x0D // [03 7E 5A 0D <≤8 alias bytes>] — persistent flash write
 
-	aliasLen = 8 // user alias is 8 bytes (matches EFW_ID / the serial readback)
+	aliasLen = 8 // user alias is 8 bytes (same width as the serial readback)
 
 	// opMotion sub-functions (byte[4]).
 	motCalibrate = 0x01 // home + re-align slots; no target, no reply
 	motClearErr  = 0x0F // clear a latched error state; no reply
 	// 0x02 / 0x03 are bidirectional / unidirectional move (see dir* below).
 
-	// opQuery subcodes (byte[4]), confirmed from the SDK's constant table @0x7940.
+	// opQuery subcodes (byte[4])
 	subStatus = 0x01 // -> position/state report
 	subInfo   = 0x04 // -> open handshake: firmware/model
 	subSerial = 0x0C // -> factory serial number (read-only)
 	subAlias  = 0x0D // -> user alias (read-only; 0x0D is also the write opcode)
 
-	// Move direction (byte[4]). The SDK keeps this as a host-side flag
-	// (EFWSetDirection just sets it; nothing is sent to the wheel) and stamps it
-	// into each move command. Bidirectional = firmware picks the shortest arc;
-	// unidirectional = firmware always rotates the same way, so every slot is
-	// approached from the same side and gear backlash is taken up identically
-	// (repeatable seating, at the cost of speed). These are opMotion byte[4]
-	// values, alongside motCalibrate.
+	// Bidirectional = firmware picks the shortest arc;
+	// unidirectional = firmware always rotates the same way.
 	dirBidirectional  = 0x02
 	dirUnidirectional = 0x03
 )
 
-// moveSettle is the post-write settle the SDK applies after a move/calibrate/
-// alias-write (the MCU accepting the command, not the physical rotation — that is
-// observed asynchronously via Position). A var so tests can zero it.
+// moveSettle is the post-write settle after a move — the MCU accepting the
+// command, not the physical rotation, which is observed via Position. A var so
+// tests can zero it.
 var moveSettle = 200 * time.Millisecond
 
 // Status-report field offsets, confirmed against hardware (a move from slot 1→4
 // showed byte4=state, byte6=target, byte7=current, all 1-based on the wire;
 // byte9 constant = slot count).
+// statusByteTarget, stateCalibrating, and stateMoving are unused by the code but
+// kept to document the full status-report layout (e.g. Position checks != stateIdle
+// rather than == stateMoving, so it also reports -1 while calibrating).
 const (
 	statusByteState  = 4 // 0x01 idle, 0x04 moving
 	statusByteTarget = 6 // commanded slot, 1-based
@@ -74,8 +72,13 @@ type EFW struct {
 	info       DeviceInfo
 	featureLen int
 
-	mu             sync.Mutex // serializes a command + its reply (per-device, like the SDK)
-	unidirectional bool       // host-side; stamped into each move command's byte[4]
+	// mu serializes a command + its reply per device. It is intentionally held
+	// across the post-command moveSettle sleep (in SetPosition/Calibrate/SetAlias):
+	// that sleep is the MCU's command-accept window, so a concurrent poll must wait
+	// for it rather than interleave a new command — do not move the sleep out of the
+	// lock.
+	mu             sync.Mutex
+	unidirectional bool // host-side; stamped into each move command's byte[4]
 }
 
 // SetUnidirectional selects unidirectional (true) or bidirectional (false) moves.
@@ -161,7 +164,7 @@ func List() ([]Listing, error) {
 
 // OpenBySerial opens the EFW whose ZWO factory serial matches (case-insensitive
 // hex). This is the stable, multi-device-safe way to bind a wheel — unlike the
-// enumeration index, the serial follows the physical unit (audit F4).
+// enumeration index, the serial follows the physical unit.
 func OpenBySerial(serial string) (*EFW, error) {
 	list, err := List()
 	if err != nil {
@@ -189,7 +192,7 @@ func (e *EFW) RawStatus() ([]byte, error) {
 }
 
 // statusLocked sends [03 7E 5A 02 01] then reads the report-ID-1 reply. No
-// settle (mirrors the SDK clearError path). Caller holds mu.
+// settle. Caller holds mu.
 func (e *EFW) statusLocked() ([]byte, error) {
 	q := make([]byte, e.featureLen)
 	q[0], q[1], q[2], q[3], q[4] = repIDCmd, sig0, sig1, opQuery, subStatus
@@ -206,8 +209,6 @@ func (e *EFW) statusLocked() ([]byte, error) {
 
 // Serial reads the device's factory serial via the [03 7E 5A 02 0C] query and
 // returns the raw reply payload (reply[4:]) plus its hex string. Read-only.
-// (The SDK additionally nibble-unpacks this into its own format; raw is enough
-// to tell whether the device carries a unique, non-zero serial.)
 func (e *EFW) Serial() (raw []byte, hexStr string, err error) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
@@ -231,10 +232,7 @@ func (e *EFW) Serial() (raw []byte, hexStr string, err error) {
 
 // SerialZWO returns the factory serial formatted exactly as ZWO's
 // EFWGetSerialNumber does (16 hex chars), so it matches ZWO/ASCOM tooling. The
-// device sends a packed form; the SDK unpacks it as a 16-nibble stream:
-// out[0..2] are nibble pairs of raw[0..5]; out[3..7] read raw[6] low-nibble,
-// raw[7..10] as full bytes, and raw[11] low-nibble. Validated against the SDK
-// (raw 010f020102000703dcef… → 1f2120703dcef2b1).
+// device sends a packed form.
 func (e *EFW) SerialZWO() (string, error) {
 	raw, _, err := e.Serial()
 	if err != nil {
@@ -319,8 +317,7 @@ func (e *EFW) Handshake() ([]byte, error) {
 	return r, nil
 }
 
-// FirmwareVersion returns (major, minor) from the handshake reply. The SDK reads
-// the version from reply[4] (major) and reply[6] (minor) of the info query.
+// FirmwareVersion returns (major, minor) from the handshake reply.
 func (e *EFW) FirmwareVersion() (major, minor int, err error) {
 	r, err := e.Handshake()
 	if err != nil {
@@ -396,7 +393,7 @@ func (e *EFW) Calibrate() error {
 
 // Position returns the current 0-based slot, or -1 while the wheel is moving or
 // its state is not idle. The wire reports a 1-based slot; we present 0-based to
-// match the ASCOM convention (as the SDK does).
+// match the ASCOM convention.
 func (e *EFW) Position() (int, error) {
 	e.mu.Lock()
 	defer e.mu.Unlock()

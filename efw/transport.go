@@ -1,11 +1,11 @@
 // Package efw is a pure-Go driver for the ZWO EFW (Electronic Filter Wheel),
 // talking the device's USB-HID feature-report protocol directly — no cgo SDK.
 //
-// only the HID transport is platform-specific (IOKit on darwin for dev/test, a
-// pure-Go hidraw backend on linux for deployment — to be added).
+// only the HID transport is platform-specific: IOKit (cgo) on darwin, and pure-Go
+// backends on linux (hidraw) and windows (hid.dll + SetupAPI).
 package efw
 
-// ZWO USB vendor ID and the known EFW product IDs (from the SDK GetProductIDs).
+// ZWO USB vendor ID and the known EFW product IDs.
 const (
 	VID     uint16 = 0x03C3
 	PIDEFW1 uint16 = 0x1F01

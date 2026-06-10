@@ -9,8 +9,7 @@ import (
 
 // fakeHID is an in-memory Transport: it records the bytes we send (to assert
 // command encoding) and returns canned replies (to assert parsing) — so the whole
-// EFW logic is testable with no hardware and no cgo. This is the seam audit F8
-// said was missing.
+// EFW logic is testable with no hardware and no cgo.
 type fakeHID struct {
 	mu        sync.Mutex
 	sent      [][]byte           // every SetFeature payload
@@ -68,7 +67,7 @@ func (f *fakeHID) firstSent() []byte {
 
 func testEFW(f *fakeHID) *EFW { return newEFW(f, DeviceInfo{FeatureLen: 64, Product: "ZWO EFW"}) }
 
-// Fixtures — captured verbatim from a real ZWO EFW (see EFW_PROTOCOL.md).
+// Fixtures — captured
 var (
 	fxStatusIdle   = []byte{0x01, 0x7e, 0x5a, 0x01, 0x01, 0x00, 0x01, 0x01, 0x01, 0x07, 0x00, 0x00, 0x00, 0x00, 0x2b, 0x01}
 	fxStatusMoving = []byte{0x01, 0x7e, 0x5a, 0x01, 0x04, 0x00, 0x04, 0x02, 0x03, 0x07, 0x00, 0x00, 0x00, 0x00, 0x2b, 0x01}
