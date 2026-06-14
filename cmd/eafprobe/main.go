@@ -6,9 +6,9 @@
 //	eafprobe -stop          # halt motion
 //	eafprobe -watch         # poll position+moving repeatedly
 //
-// NOTE: reverse-engineered from libEAFFocuser, not yet hardware-validated. The
-// temperature is raw (thermistor LUT pending); E-class focusers (MaxStep > 65535)
-// need a 24-bit move encoding that isn't decoded yet.
+// NOTE: not yet hardware-validated. The temperature is raw (thermistor LUT
+// pending); E-class focusers (MaxStep > 65535) need a 24-bit move encoding that
+// isn't implemented yet.
 package main
 
 import (

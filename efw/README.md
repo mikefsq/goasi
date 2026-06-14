@@ -2,8 +2,7 @@
 
 The `efw` package of the `goasi` module (`github.com/mikefsq/goasi/efw`): a
 **cgo-free** driver for the ZWO EFW (Electronic Filter Wheel). It talks the
-device's USB-HID feature-report protocol directly — no vendor SDK runtime
-dependency in the process — and is validated against real hardware.
+device's USB-HID feature-report protocol directly.
 
 ## Layout
 
