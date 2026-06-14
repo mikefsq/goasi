@@ -1,26 +1,34 @@
 # goasi
 
-cgo bindings for the [ZWO](https://www.zwoastro.com/) ASI device SDKs, as a set
-of self-contained Go packages — one per device family.
+Go packages for [ZWO](https://www.zwoastro.com/) ASI devices — one per device
+family. The camera and rotator are **cgo bindings** to ZWO's ASI SDKs; the
+focuser and filter wheel are **pure-Go USB-HID drivers** with no SDK runtime
+dependency.
 
 Module path: `github.com/mikefsq/goasi`
 
-| Package | Device | ZWO SDK | Header | Links |
-|---|---|---|---|---|
-| `ccd` | Camera | ASICamera2 (V1.41) | `ASICamera2.h` | `-lASICamera2` |
-| `caa` | Rotator (Camera Angle Adjuster) | CAA (V1.5.9) | `CAA_API.h` | `-lCAA` |
-| `eaf` | Focuser (Electronic Auto Focuser) | EAF (V1.8.1) | `EAF_focuser.h` | `-lEAFFocuser` |
-| `efw` | Filter wheel (Electronic Filter Wheel) | n/a | n/a | n/a |
+| Package | Device | Kind | SDK / transport |
+|---|---|---|---|
+| `ccd` | Camera | cgo SDK binding | ASICamera2 (V1.41), `-lASICamera2` |
+| `caa` | Rotator (Camera Angle Adjuster) | cgo SDK binding | CAA (V1.5.9), `-lCAA` |
+| `eaf` | Focuser (Electronic Auto Focuser) | **pure-Go USB-HID** | no SDK — see [`eaf/README.md`](eaf/README.md) |
+| `efw` | Filter wheel (Electronic Filter Wheel) | **pure-Go USB-HID** | no SDK — see [`efw/README.md`](efw/README.md) |
 
-Each package is independent: import only the one(s) you need. Drivers in this
-workspace (`asiccd`, `asieaf`, `asiefw`, `asicaa`) each import a single package.
+Each package is independent: import only the one(s) you need. Drivers in the
+companion workspace (`asiccd`, `asieaf`, `asiefw`, `asicaa`) each import a single
+package.
+
+The two pure-Go HID drivers (`eaf`, `efw`) cross-compile to a static binary for
+Linux and Windows and need no vendor library — only the IOKit framework on macOS.
+Their own READMEs cover build, tests, and Linux udev permissions. The rest of
+this document concerns the two **cgo SDK** packages (`ccd`, `caa`).
 
 ## The shared libraries are not bundled
 
-The ZWO `.so`/`.dylib` runtime libraries are not redistributed here — only the
-headers, which are all that's needed to compile. Download the ASI
+The ZWO `.so`/`.dylib` runtime libraries for `ccd`/`caa` are not redistributed
+here — only the headers, which are all that's needed to compile. Download the ASI
 SDK for your device from ZWO and install the matching-architecture library
-yourself.
+yourself. (`eaf`/`efw` need none of this.)
 
 The packages link with `-L/usr/local/lib`, so the simplest setup is to drop the
 library there:
@@ -54,42 +62,44 @@ install_name_tool -change libASICamera2.dylib \
 If the install name uses `@rpath`, add a search path instead:
 `install_name_tool -add_rpath /opt/zwo ./asiccd`.
 
-**Supported targets** follow the ZWO SDK: Linux (`x86`/`x64`/`armv6,7,8`) and
-macOS (`x86_64` and `arm64`). On Linux the EAF additionally needs
-`libsdbus-c++.so.2` and `libWrapperSdbus.so` from the same lib directory.
+**Supported targets** for the cgo packages follow the ZWO SDK: Linux
+(`x86`/`x64`/`armv6,7,8`) and macOS (`x86_64` and `arm64`). On Linux the EAF SDK
+historically also needed `libsdbus-c++.so.2` / `libWrapperSdbus.so`; the pure-Go
+`eaf` driver removes that dependency entirely.
 
 ## Layout
 
 ```
 goasi/
-├── ccd/   ccd.go   + include/ASICamera2.h
-├── caa/   caa.go   + include/CAA_API.h
-├── eaf/   eaf.go   + include/EAF_focuser.h
-└── efw/   efw.go
+├── ccd/   ccd.go  + include/ASICamera2.h   — cgo, ZWO ASICamera2 SDK
+├── caa/   caa.go  + include/CAA_API.h      — cgo, ZWO CAA SDK
+├── eaf/   eaf.go  + transport_*.go         — pure-Go USB-HID driver
+└── efw/   efw.go  + transport_*.go         — pure-Go USB-HID driver
 ```
 
-Each package's cgo preamble uses `-I${SRCDIR}/include`, so the bundled header
-resolves correctly even when the package is imported as a dependency.
+The cgo packages (`ccd`, `caa`) use `-I${SRCDIR}/include` in their cgo preamble,
+so the bundled header resolves correctly even when the package is imported as a
+dependency. The HID packages (`eaf`, `efw`) have only a thin per-OS
+`transport_<os>.go` and are otherwise platform-independent.
 
 ## Notes
 
-- **EAF header.** `EAF_focuser.h` is C++ only because `EAFStopAndWait` declares a
-  default argument (`int timeoutMs = 1000`); the vendored copy has that one
-  default removed so the header `#include`s cleanly as C (the SDK exports
-  everything with C linkage). That is the only change from the ZWO original.
-- **Coverage.** `ccd` is a full camera binding; `efw` is a go-native hid driver;
-  `caa`/`eaf` now wrap their whole SDK surface, with two exceptions: the EAF BLE
-  callback registrars  (`EAFBLERegConnStateCallback`/`EAFBLERegPairStateCallback`), 
-  which take C function pointers and would need a cgo `//export` bridge; and 
-  `CAAMinDegree`, which the shipped `libCAA` exports with C++ name mangling instead
-  of C linkage (a ZWO SDK bug), so it is not callable from cgo.
+- **Pure-Go HID drivers.** `eaf` and `efw` talk the device's USB-HID
+  feature-report protocol directly — no vendor SDK in the process. See their
+  package READMEs for the device surface, hardware-validation status, and the
+  Linux udev rule.
+- **Coverage.** `ccd` is a full camera binding; `caa` wraps the CAA SDK surface
+  with one exception — `CAAMinDegree`, which the shipped `libCAA` exports with
+  C++ name mangling instead of C linkage (a ZWO SDK bug), so it is not callable
+  from cgo.
 
 ## License
 
 The Go binding code in this repository is licensed under the
 [MIT License](LICENSE).
 
-This does **not** extend to the ZWO ASI SDK. The headers under `*/include/` are
-© ZWO, and the runtime libraries (not included here) are ZWO's property under
-ZWO's own terms — obtain the SDK from [ZWO](https://www.zwoastro.com/). The MIT
-license covers only the Go code in this repository.
+This does **not** extend to the ZWO ASI SDK. The headers under `ccd/include/` and
+`caa/include/` are © ZWO, and the runtime libraries (not included here) are ZWO's
+property under ZWO's own terms — obtain the SDK from
+[ZWO](https://www.zwoastro.com/). The MIT license covers only the Go code in this
+repository.
