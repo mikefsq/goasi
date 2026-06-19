@@ -18,6 +18,8 @@ package main
 // log (writes the full register/command trace to asicamerasdk.log).
 extern int ASIEnableDebugLog(int iCameraID, int bEnable);
 extern int ASIGetDebugLogPath(int iCameraID, char* path);
+// The ccd binding's ASIGetVideoData wrapper is a no-op stub; call the SDK export directly.
+extern int ASIGetVideoData(int iCameraID, unsigned char* pBuffer, long lBuffSize, int iWaitms);
 */
 import "C"
 
@@ -30,9 +32,18 @@ import (
 	"sort"
 	"strings"
 	"time"
+	"unsafe"
 
 	"github.com/mikefsq/goasi/ccd"
 )
+
+// getVideoData calls the SDK's ASIGetVideoData directly (the ccd wrapper is a stub).
+func getVideoData(asi *ccd.GoAsiCamera, buf []byte, waitMs int) int {
+	if len(buf) == 0 {
+		return -1
+	}
+	return int(C.ASIGetVideoData(C.int(asi.CameraID), (*C.uchar)(unsafe.Pointer(&buf[0])), C.long(len(buf)), C.int(waitMs)))
+}
 
 func main() {
 	log.SetFlags(0)
@@ -183,7 +194,7 @@ func main() {
 			log.Fatalf("ASIStartVideoCapture rc=%d", rc)
 		}
 		warm := make([]byte, fbSize)
-		asi.ASIGetVideoData(warm, waitMs) // warm-up frame (discarded), matches gosnap's frame-0 arm
+		getVideoData(asi, warm, waitMs) // warm-up frame (discarded), matches gosnap's frame-0 arm
 		ok := 0
 		var t0 time.Time
 		if writeSER {
@@ -206,7 +217,7 @@ func main() {
 			t0 = time.Now()
 			for f := 0; f < *nframes; f++ {
 				fb := <-free
-				if asi.ASIGetVideoData(fb, waitMs) == 0 {
+				if getVideoData(asi, fb, waitMs) == 0 {
 					ok++
 					queue <- fb
 				} else {
@@ -228,7 +239,7 @@ func main() {
 		t0 = time.Now()
 		last := t0
 		for f := 0; f < *nframes; f++ {
-			if asi.ASIGetVideoData(buf, waitMs) == 0 {
+			if getVideoData(asi, buf, waitMs) == 0 {
 				ok++
 			}
 			now := time.Now()
