@@ -59,6 +59,7 @@ func main() {
 	raw8 := flag.Bool("raw8", false, "capture RAW8 (1 byte/pixel) instead of RAW16")
 	cool := flag.Bool("cool", false, "run a 30s cooling test before the snap (default off = clean snap, matching gosnap)")
 	nframes := flag.Int("n", 1, "with n>1: run a video-capture benchmark of N frames (ASIStartVideoCapture + ASIGetVideoData loop) and report fps")
+	nsingle := flag.Int("nsingle", 0, "single-shot SOAK of N frames: SDK ARM-PER-FRAME path (SingleExposure + GetExposureBytes each frame), open-once and looped — the apples-to-apples A/B vs gosnap -soak. If the SDK's own single-shot runs clean where ours wedges, our arm sequence is buggy; if it ALSO wedges, arm-per-frame is inherently FX3-hostile (use video).")
 	highspeed := flag.Bool("highspeed", false, "enable ASI_HIGH_SPEED_MODE (10-bit high-speed readout; implies RAW8)")
 	flag.Parse()
 
@@ -173,6 +174,36 @@ func main() {
 		asi.ASISetControlValue(ccd.ASI_OFFSET, *offset, 0)
 	}
 	asi.ASISetControlValue(ccd.ASI_BANDWIDTHOVERLOAD, 100, 0) // 100% USB bandwidth — matches gosnap's FPSPercent=100 for a fair video benchmark
+
+	// Single-shot SOAK (nsingle>0): the SDK's ARM-PER-FRAME path — SingleExposure (ASIStartExposure
+	// + status poll) then GetExposureBytes (ASIGetDataAfterExp) every frame, open-once and looped.
+	// The true A/B vs gosnap -soak: does the SDK's OWN single-shot path wedge the FX3 too?
+	if *nsingle > 0 {
+		step := ccd.BytesPerPixel(imgType)
+		fmt.Printf("SDK single-shot soak: %d frames at %dx%d %d-bit, exp %s (ARM EVERY FRAME)...\n", *nsingle, w, h, step*8, *exposure)
+		ok, fails := 0, 0
+		t0 := time.Now()
+		for f := 0; f < *nsingle; f++ {
+			if rc := asi.SingleExposure(); rc != 0 {
+				fails++
+				fmt.Printf("[%6.1fs] frame %d SingleExposure FAILED rc=%d\n", time.Since(t0).Seconds(), f, rc)
+				continue
+			}
+			rc, frame := asi.GetExposureBytes()
+			if rc != 0 || len(frame.Pixels) == 0 {
+				fails++
+				fmt.Printf("[%6.1fs] frame %d GetExposureBytes FAILED rc=%d len=%d\n", time.Since(t0).Seconds(), f, rc, len(frame.Pixels))
+				continue
+			}
+			ok++
+			if f%200 == 0 {
+				fmt.Printf("[%6.1fs] frame %d ok\n", time.Since(t0).Seconds(), f)
+			}
+		}
+		dt := time.Since(t0).Seconds()
+		fmt.Printf("\n*** SDK SINGLE-SHOT *** %d/%d ok, %d failed, %.1f fps (%.1fs)\n", ok, *nsingle, fails, float64(ok)/dt, dt)
+		return
+	}
 
 	// Video-capture benchmark (n>1): the SDK's high-fps path — ASIStartVideoCapture then a
 	// tight ASIGetVideoData loop, the apples-to-apples comparison for gosnap's .ser burst.
