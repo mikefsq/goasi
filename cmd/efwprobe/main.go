@@ -7,6 +7,7 @@
 package main
 
 import (
+	"errors"
 	"flag"
 	"fmt"
 	"os"
@@ -153,8 +154,14 @@ func main() {
 		}
 		for i := 0; i < 100; i++ {
 			r, _ := e.RawStatus()
-			p, _ := e.Position()
+			p, perr := e.Position()
 			fmt.Printf("  t+%5dms  pos=%2d  raw=% x\n", (i+1)*300, p, clip(r, 12))
+			if errors.Is(perr, efw.ErrWheelError) {
+				fmt.Printf("wheel faulted: %v\n", perr)
+				fmt.Println("  (unidirectional moves must wrap past the last slot; this firmware")
+				fmt.Println("   faults on that wrap. try without -uni, then run -calibrate to reset.)")
+				break
+			}
 			if p == *gotoSlot {
 				fmt.Println("arrived.")
 				break
@@ -171,8 +178,12 @@ func main() {
 		}
 		for i := 0; i < 100; i++ {
 			r, _ := e.RawStatus()
-			p, _ := e.Position()
+			p, perr := e.Position()
 			fmt.Printf("  t+%5dms  pos=%2d  raw=% x\n", (i+1)*300, p, clip(r, 12))
+			if errors.Is(perr, efw.ErrWheelError) {
+				fmt.Printf("wheel faulted: %v\n", perr)
+				break
+			}
 			if p >= 0 && i > 0 {
 				fmt.Println("settled.")
 				break

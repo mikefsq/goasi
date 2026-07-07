@@ -65,6 +65,20 @@ func (f *fakeHID) firstSent() []byte {
 	return f.sent[0]
 }
 
+// sentWithPrefix returns the first recorded payload beginning with p, or nil.
+// SetPosition may issue a status query before the move to learn the slot count,
+// so a move command isn't always sent[0].
+func (f *fakeHID) sentWithPrefix(p []byte) []byte {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for _, s := range f.sent {
+		if bytes.HasPrefix(s, p) {
+			return s
+		}
+	}
+	return nil
+}
+
 func testEFW(f *fakeHID) *EFW { return newEFW(f, DeviceInfo{FeatureLen: 64, Product: "ZWO EFW"}) }
 
 // Fixtures — captured
@@ -72,7 +86,10 @@ var (
 	fxStatusIdle   = []byte{0x01, 0x7e, 0x5a, 0x01, 0x01, 0x00, 0x01, 0x01, 0x01, 0x07, 0x00, 0x00, 0x00, 0x00, 0x2b, 0x01}
 	fxStatusMoving = []byte{0x01, 0x7e, 0x5a, 0x01, 0x04, 0x00, 0x04, 0x02, 0x03, 0x07, 0x00, 0x00, 0x00, 0x00, 0x2b, 0x01}
 	fxStatusAt3    = []byte{0x01, 0x7e, 0x5a, 0x01, 0x01, 0x00, 0x04, 0x04, 0x04, 0x07, 0x00, 0x00, 0x00, 0x00, 0x2b, 0x01}
-	fxSerial       = []byte{0x01, 0x7e, 0x5a, 0x0c, 0x01, 0x0f, 0x02, 0x01, 0x02, 0x00, 0x07, 0x03, 0xdc, 0xef, 0x2b, 0x01}
+	// Captured: a unidirectional move that faulted at the wrap — state 0x06,
+	// error code 0x0c in byte 5, stuck at wire slot 7.
+	fxStatusError = []byte{0x01, 0x7e, 0x5a, 0x01, 0x06, 0x0c, 0x01, 0x07, 0x01, 0x07, 0x00, 0x00, 0x00, 0x00, 0x30, 0x00}
+	fxSerial      = []byte{0x01, 0x7e, 0x5a, 0x0c, 0x01, 0x0f, 0x02, 0x01, 0x02, 0x00, 0x07, 0x03, 0xdc, 0xef, 0x2b, 0x01}
 	fxHandshake    = []byte{0x01, 0x7e, 0x5a, 0x04, 0x03, 0x00, 0x09, 0x00, 0x45, 0x46, 0x57, 0x2d, 0x53, 0x2d, 0x30, 0x00}
 )
 
@@ -100,14 +117,122 @@ func TestEncodeCommands(t *testing.T) {
 		t.Run(c.name, func(t *testing.T) {
 			f := newFake()
 			c.do(testEFW(f))
-			got := f.firstSent()
+			got := f.sentWithPrefix(c.want)
 			if got == nil {
-				t.Fatal("no command sent")
-			}
-			if !bytes.HasPrefix(got, c.want) {
-				t.Errorf("got % x, want prefix % x", got, c.want)
+				t.Errorf("no command with prefix % x (sent %d)", c.want, len(f.sent))
 			}
 		})
+	}
+}
+
+// SetPosition must reject a slot the wheel doesn't have. A 7-slot wheel is
+// 0..6; asking for slot 7 (or higher) previously sent wire-slot 8, which the
+// MCU silently ignores — the tool "accepted" the move but the motor never ran.
+func TestSetPositionRejectsOutOfRange(t *testing.T) {
+	moveSettle = 0
+	f := newFake()
+	f.replies[[2]byte{opQuery, subStatus}] = fxStatusIdle // 7-slot wheel
+	e := testEFW(f)
+
+	if err := e.SetPosition(7); err == nil {
+		t.Error("SetPosition(7) on a 7-slot wheel: want error, got nil")
+	}
+	if got := f.sentWithPrefix([]byte{repIDCmd, sig0, sig1, opMotion}); got != nil {
+		t.Errorf("rejected move must send no motion command; sent % x", got)
+	}
+
+	// The last valid slot (6) must still be accepted and produce a move command.
+	if err := e.SetPosition(6); err != nil {
+		t.Errorf("SetPosition(6) on a 7-slot wheel: want nil, got %v", err)
+	}
+	if got := f.sentWithPrefix([]byte{repIDCmd, sig0, sig1, opMotion}); got == nil {
+		t.Error("SetPosition(6): no motion command sent")
+	}
+}
+
+// A latched hardware fault must surface through Position (wrapping ErrWheelError
+// with the code) rather than masquerade as -1/"still moving" — otherwise a poll
+// loop waits forever on a move that will never settle.
+func TestPositionSurfacesHardwareError(t *testing.T) {
+	f := newFake()
+	f.replies[[2]byte{opQuery, subStatus}] = fxStatusError
+	e := testEFW(f)
+
+	p, err := e.Position()
+	if p != -1 {
+		t.Errorf("Position on fault: got pos %d want -1", p)
+	}
+	if !errors.Is(err, ErrWheelError) {
+		t.Fatalf("Position on fault: err=%v want ErrWheelError", err)
+	}
+	if code, _ := e.HWErrorCode(); code != 0x0c {
+		t.Errorf("HWErrorCode=%d want 12", code)
+	}
+}
+
+// A unidirectional move back by exactly one slot (forward distance n-1) faults
+// this firmware, so — like ZWO's driver, confirmed by USB capture — the wheel is
+// sent through an intermediate slot half a revolution forward: on a 7-slot wheel
+// slot 1 -> 0 becomes 1 -> 4 (settle) -> 0 (3 + 3 steps).
+func TestUnidirectionalReverseSplit(t *testing.T) {
+	moveSettle = 0
+	splitPoll = 0
+	idleAt := func(wire byte) []byte {
+		return []byte{0x01, 0x7e, 0x5a, 0x01, 0x01, 0x00, wire, wire, wire, 0x07, 0, 0, 0, 0, 0x2b, 0x01}
+	}
+	f := newFake()
+	// SetPosition reads idle@wire2 (slot1); the intermediate hop then shows moving,
+	// then idle@wire5 (slot4) so the wait completes and the final hop is issued.
+	f.statusSeq = [][]byte{idleAt(0x02), fxStatusMoving, idleAt(0x05)}
+	e := testEFW(f)
+	e.SetUnidirectional(true)
+
+	if err := e.SetPosition(0); err != nil { // slot 1 -> 0: forward distance 6 (worst case)
+		t.Fatalf("SetPosition(0): %v", err)
+	}
+
+	// Expect a uni move to the intermediate slot 4 (wire5) then to slot 0 (wire1).
+	mid := []byte{repIDCmd, sig0, sig1, opMotion, dirUnidirectional, 0x05}
+	final := []byte{repIDCmd, sig0, sig1, opMotion, dirUnidirectional, 0x01}
+	iMid, iFinal := -1, -1
+	for i, s := range f.sent {
+		if iMid < 0 && bytes.HasPrefix(s, mid) {
+			iMid = i
+		}
+		if iFinal < 0 && bytes.HasPrefix(s, final) {
+			iFinal = i
+		}
+	}
+	switch {
+	case iMid < 0:
+		t.Error("no intermediate move to slot 4 (wire5) — split not performed")
+	case iFinal < 0:
+		t.Error("no final move to slot 0 (wire1)")
+	case iMid > iFinal:
+		t.Errorf("intermediate move (idx %d) must precede final move (idx %d)", iMid, iFinal)
+	}
+}
+
+// A unidirectional move that is NOT the worst case must stay a single command —
+// e.g. slot 5 -> 3 (forward distance 5) never splits (matches ZWO on the wire).
+func TestUnidirectionalNoSplitWhenNotWorstCase(t *testing.T) {
+	moveSettle = 0
+	f := newFake()
+	f.replies[[2]byte{opQuery, subStatus}] = []byte{0x01, 0x7e, 0x5a, 0x01, 0x01, 0x00, 0x06, 0x06, 0x06, 0x07, 0, 0, 0, 0, 0x2b, 0x01} // idle at wire6 (slot5)
+	e := testEFW(f)
+	e.SetUnidirectional(true)
+
+	if err := e.SetPosition(3); err != nil { // slot 5 -> 3: forward distance 5
+		t.Fatalf("SetPosition(3): %v", err)
+	}
+	moves := 0
+	for _, s := range f.sent {
+		if bytes.HasPrefix(s, []byte{repIDCmd, sig0, sig1, opMotion}) {
+			moves++
+		}
+	}
+	if moves != 1 {
+		t.Errorf("slot 5->3 uni: got %d move commands, want 1 (no split)", moves)
 	}
 }
 
@@ -161,7 +286,9 @@ func TestDecodeHWError(t *testing.T) {
 func TestMoveSettlesToTarget(t *testing.T) {
 	moveSettle = 0
 	f := newFake()
-	f.statusSeq = [][]byte{fxStatusMoving, fxStatusMoving, fxStatusAt3}
+	// The first frame is consumed by SetPosition's slot-count read (it learns the
+	// wheel size before moving); the rest drive the poll loop below.
+	f.statusSeq = [][]byte{fxStatusMoving, fxStatusMoving, fxStatusMoving, fxStatusAt3}
 	e := testEFW(f)
 	if err := e.SetPosition(3); err != nil {
 		t.Fatal(err)

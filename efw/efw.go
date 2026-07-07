@@ -79,6 +79,7 @@ type EFW struct {
 	// lock.
 	mu             sync.Mutex
 	unidirectional bool // host-side; stamped into each move command's byte[4]
+	slots          int  // cached slot count from the last status read; 0 = unknown
 }
 
 // SetUnidirectional selects unidirectional (true) or bidirectional (false) moves.
@@ -203,6 +204,11 @@ func (e *EFW) statusLocked() ([]byte, error) {
 	r[0] = repIDReply
 	if err := e.t.GetFeature(r); err != nil {
 		return nil, fmt.Errorf("status read: %w", err)
+	}
+	if len(r) > statusByteSlots { // cache the slot count so SetPosition can range-check
+		if n := int(r[statusByteSlots]); n > 0 {
+			e.slots = n
+		}
 	}
 	return r, nil
 }
@@ -391,9 +397,18 @@ func (e *EFW) Calibrate() error {
 	return nil
 }
 
-// Position returns the current 0-based slot, or -1 while the wheel is moving or
-// its state is not idle. The wire reports a 1-based slot; we present 0-based to
-// match the ASCOM convention.
+// ErrWheelError is returned by Position (wrapped, with the code) when the wheel
+// has latched a hardware fault — status state 0x06, e.g. a unidirectional move
+// that couldn't complete. It is distinct from a transport error: the link is
+// fine, the mechanism faulted. Callers polling for arrival should stop on this
+// (rather than treat -1 as "still moving") and ClearError to reset the wheel.
+var ErrWheelError = errors.New("wheel hardware error")
+
+// Position returns the current 0-based slot, or -1 while the wheel is moving.
+// The wire reports a 1-based slot; we present 0-based to match the ASCOM
+// convention. If the wheel has latched a hardware fault it returns -1 wrapping
+// ErrWheelError (with the code) — not nil — so a poll loop stops instead of
+// spinning forever on a move that will never settle.
 func (e *EFW) Position() (int, error) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
@@ -404,7 +419,14 @@ func (e *EFW) Position() (int, error) {
 	if len(r) <= statusBytePos {
 		return -1, errors.New("short status report")
 	}
-	if r[statusByteState] != stateIdle { // moving/unsettled
+	if r[statusByteState] == stateError {
+		code := 0
+		if len(r) > 5 {
+			code = int(r[5])
+		}
+		return -1, fmt.Errorf("%w (code %d)", ErrWheelError, code)
+	}
+	if r[statusByteState] != stateIdle { // moving/calibrating
 		return -1, nil
 	}
 	return int(r[statusBytePos]) - 1, nil
@@ -425,12 +447,63 @@ func (e *EFW) Slots() int {
 // SetPosition moves the wheel to the given 0-based slot. Returns once the move
 // is initiated (plus the MCU settle); poll Position for completion (-1 while
 // moving) — the carousel physically rotates over seconds.
+//
+// In unidirectional mode a move back by exactly one slot has forward distance
+// n-1 (a full revolution minus one step), which this firmware faults on (latched
+// error 12). ZWO's own driver avoids it by splitting that move into two ~half
+// revolutions through an intermediate slot — confirmed on the wire: a 7-slot
+// wheel doing slot 1->0 sends 1->4 then, after it settles, 4->0 (3 + 3 steps).
+// We reproduce that: for that one case SetPosition blocks until the intermediate
+// hop settles, then initiates the final hop and returns.
 func (e *EFW) SetPosition(slot int) error {
 	if slot < 0 || slot > 0x7f {
 		return fmt.Errorf("slot %d out of range", slot)
 	}
 	e.mu.Lock()
-	defer e.mu.Unlock()
+	// Read status to learn the slot count (for the range check) and, in
+	// unidirectional mode, the current slot (for the split decision). Bidi moves
+	// with a known count skip the read: the firmware takes the short arc and
+	// never faults, so the current slot doesn't matter.
+	var r []byte
+	if e.slots == 0 || e.unidirectional {
+		r, _ = e.statusLocked() // best-effort; populates e.slots on success
+	}
+	n := e.slots
+	if n > 0 && slot >= n {
+		e.mu.Unlock()
+		return fmt.Errorf("slot %d out of range (wheel has %d slots: 0..%d)", slot, n, n-1)
+	}
+
+	// Unidirectional worst case: forward distance n-1 (target one slot behind).
+	// Split into intermediate (half a revolution forward) then target, matching
+	// ZWO. Only when we know the current slot and the wheel is idle.
+	if e.unidirectional && n > 0 && len(r) > statusBytePos && r[statusByteState] == stateIdle {
+		cur := int(r[statusBytePos]) - 1
+		if fwd := (slot - cur + n) % n; fwd == n-1 {
+			mid := (cur + fwd/2) % n
+			if err := e.moveLocked(mid); err != nil {
+				e.mu.Unlock()
+				return err
+			}
+			e.mu.Unlock()
+			if err := e.waitIdleAt(mid); err != nil {
+				return fmt.Errorf("unidirectional reverse split via slot %d: %w", mid, err)
+			}
+			e.mu.Lock()
+			err := e.moveLocked(slot)
+			e.mu.Unlock()
+			return err
+		}
+	}
+
+	err := e.moveLocked(slot)
+	e.mu.Unlock()
+	return err
+}
+
+// moveLocked issues a single move command to a validated, in-range slot. Caller
+// holds mu; the direction byte follows the current unidirectional setting.
+func (e *EFW) moveLocked(slot int) error {
 	m := make([]byte, e.featureLen)
 	m[0], m[1], m[2], m[3] = repIDCmd, sig0, sig1, opMotion
 	m[4] = dirBidirectional
@@ -443,4 +516,25 @@ func (e *EFW) SetPosition(slot int) error {
 	}
 	time.Sleep(moveSettle)
 	return nil
+}
+
+// splitPoll is the poll interval while waiting for the intermediate hop of a
+// unidirectional reverse split to settle. A var so tests can zero it.
+var splitPoll = 150 * time.Millisecond
+
+// waitIdleAt blocks until the wheel is idle at the given 0-based slot, returning
+// immediately on a hardware fault (ErrWheelError). Bounded so a stuck wheel can't
+// hang the split forever. Must not be called with mu held (it polls Position).
+func (e *EFW) waitIdleAt(slot int) error {
+	for i := 0; i < 300; i++ { // generous cap; a half-revolution hop settles in seconds
+		p, err := e.Position()
+		if err != nil {
+			return err // includes ErrWheelError
+		}
+		if p == slot {
+			return nil
+		}
+		time.Sleep(splitPoll)
+	}
+	return fmt.Errorf("timeout waiting for intermediate slot %d", slot)
 }
