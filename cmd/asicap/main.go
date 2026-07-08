@@ -61,6 +61,7 @@ func main() {
 	nframes := flag.Int("n", 1, "with n>1: run a video-capture benchmark of N frames (ASIStartVideoCapture + ASIGetVideoData loop) and report fps")
 	nsingle := flag.Int("nsingle", 0, "single-shot SOAK of N frames: SDK ARM-PER-FRAME path (SingleExposure + GetExposureBytes each frame), open-once and looped — the apples-to-apples A/B vs gosnap -soak. If the SDK's own single-shot runs clean where ours wedges, our arm sequence is buggy; if it ALSO wedges, arm-per-frame is inherently FX3-hostile (use video).")
 	highspeed := flag.Bool("highspeed", false, "enable ASI_HIGH_SPEED_MODE (10-bit high-speed readout; implies RAW8)")
+	fpsPerc := flag.Int("fps", 100, "ASI_BANDWIDTHOVERLOAD / FPS percent 40..100 — matches gosnap's -fps for A/B sweeps")
 	flag.Parse()
 
 	n := ccd.ASIGetNumOfConnectedCameras()
@@ -173,7 +174,7 @@ func main() {
 	if *offset >= 0 {
 		asi.ASISetControlValue(ccd.ASI_OFFSET, *offset, 0)
 	}
-	asi.ASISetControlValue(ccd.ASI_BANDWIDTHOVERLOAD, 100, 0) // 100% USB bandwidth — matches gosnap's FPSPercent=100 for a fair video benchmark
+	asi.ASISetControlValue(ccd.ASI_BANDWIDTHOVERLOAD, *fpsPerc, 0) // USB bandwidth — matches gosnap's -fps for a fair benchmark
 
 	// Single-shot SOAK (nsingle>0): the SDK's ARM-PER-FRAME path — SingleExposure (ASIStartExposure
 	// + status poll) then GetExposureBytes (ASIGetDataAfterExp) every frame, open-once and looped.
